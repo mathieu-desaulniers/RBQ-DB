@@ -6,6 +6,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import os
+import time
 
 URL_RBQ = (
     "https://www.donneesquebec.ca/recherche/dataset/"
@@ -16,7 +17,6 @@ URL_RBQ = (
 SHEET_ID = "1S705pc9MDjlDjhnvP4OhBu-J48DQg9P9jJk2TujtmDo"
 ONGLET   = "Licences RBQ"
 
-# Sous-catégories à inclure
 CODES_FILTRES = [
     "15.1", "15.1.1", "15.2", "15.2.1",
     "15.3", "15.3.1", "15.7", "15.8",
@@ -38,7 +38,13 @@ print("🔍 Filtrage des sous-catégories...")
 pattern = "|".join([c.replace(".", "\\.") for c in CODES_FILTRES])
 masque = df["Sous-catégories"].astype(str).str.contains(pattern, na=False, regex=True)
 df_filtre = df[masque].copy()
-print(f"✅ {len(df_filtre):,} entrepreneurs trouvés")
+print(f"✅ {len(df_filtre):,} entrepreneurs trouvés après filtrage")
+
+# Vérification limite Google Sheets
+MAX_LIGNES = 40000
+if len(df_filtre) > MAX_LIGNES:
+    print(f"⚠️ Trop de lignes ({len(df_filtre):,}), troncature à {MAX_LIGNES:,}")
+    df_filtre = df_filtre.head(MAX_LIGNES)
 
 # Connexion Google Sheets
 print("🔗 Connexion à Google Sheets...")
@@ -65,5 +71,6 @@ batch = 5000
 for i in range(0, len(data), batch):
     ws.append_rows(data[i:i+batch], value_input_option="RAW")
     print(f"  → {min(i+batch, len(data)):,} / {len(data):,} lignes écrites")
+    time.sleep(2)
 
 print(f"🎉 Terminé! {len(df_filtre):,} entrepreneurs dans Google Sheets")

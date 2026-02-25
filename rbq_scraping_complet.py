@@ -32,29 +32,18 @@ def scraper_fiche(numero_licence):
     try:
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return {"URL Fiche RBQ": url}
+            return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
         
         soup = BeautifulSoup(resp.text, "html.parser")
         data = {"URL Fiche RBQ": url}
 
-        # Chercher les champs dans les définitions
+        # Chercher seulement les réclamations
         dts = soup.find_all("dt")
         dds = soup.find_all("dd")
         for dt, dd in zip(dts, dds):
             label = dt.get_text(strip=True)
             valeur = dd.get_text(" ", strip=True)
-            
-            if "Courriel" in label:
-                data["Courriel"] = valeur
-            elif "Téléphone" in label:
-                data["Téléphone"] = valeur
-            elif "Autre" in label:
-                data["Autres noms"] = valeur
-            elif "paiement" in label.lower():
-                data["Date paiement annuel"] = valeur
-            elif "Montant" in label:
-                data["Montant cautionnement"] = valeur
-            elif "Réclamation" in label:
+            if "Réclamation" in label:
                 data["Réclamations cautionnement"] = valeur
 
         # Chercher les répondants
@@ -70,10 +59,15 @@ def scraper_fiche(numero_licence):
         for i, rep in enumerate(repondants[:3], 1):
             data[f"Répondant {i}"] = rep
 
+        # S'assurer que toutes les colonnes existent
+        for col in ["Réclamations cautionnement", "Répondant 1", "Répondant 2", "Répondant 3"]:
+            if col not in data:
+                data[col] = ""
+
         return data
 
     except Exception:
-        return {"URL Fiche RBQ": url}
+        return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
 
 # ── Téléchargement ──────────────────────────────────────────
 print("📥 Téléchargement des données RBQ...")
@@ -110,7 +104,16 @@ for idx, row in df_filtre.iterrows():
 
 df_extra = pd.DataFrame(extras)
 df_final = pd.concat([df_filtre, df_extra], axis=1)
-print(f"✅ Scraping terminé !")
+print(f"✅ Scraping terminé ! Total colonnes: {len(df_final.columns)}")
+
+# Vérification limite Google Sheets (max 10 millions de cellules)
+max_cellules = 10000000
+nb_cellules = len(df_final) * len(df_final.columns)
+print(f"  → {nb_cellules:,} cellules au total ({len(df_final.columns)} colonnes x {len(df_final):,} lignes)")
+if nb_cellules > max_cellules:
+    print(f"⚠️ ATTENTION: dépasse la limite Google Sheets!")
+else:
+    print(f"✅ Dans les limites Google Sheets")
 
 # ── Google Sheets ─────────────────────────────────────────────
 print("🔗 Connexion à Google Sheets...")

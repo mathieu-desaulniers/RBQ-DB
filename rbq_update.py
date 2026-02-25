@@ -32,30 +32,21 @@ def scraper_fiche(numero_licence):
     try:
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return {"URL Fiche RBQ": url}
+            return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
         
         soup = BeautifulSoup(resp.text, "html.parser")
         data = {"URL Fiche RBQ": url}
 
+        # Chercher seulement les réclamations
         dts = soup.find_all("dt")
         dds = soup.find_all("dd")
         for dt, dd in zip(dts, dds):
             label = dt.get_text(strip=True)
             valeur = dd.get_text(" ", strip=True)
-            
-            if "Courriel" in label:
-                data["Courriel"] = valeur
-            elif "Téléphone" in label:
-                data["Téléphone"] = valeur
-            elif "Autre" in label:
-                data["Autres noms"] = valeur
-            elif "paiement" in label.lower():
-                data["Date paiement annuel"] = valeur
-            elif "Montant" in label:
-                data["Montant cautionnement"] = valeur
-            elif "Réclamation" in label:
+            if "Réclamation" in label:
                 data["Réclamations cautionnement"] = valeur
 
+        # Chercher les répondants
         repondants = []
         tags = soup.find_all(["h3", "h4", "p", "div"])
         for tag in tags:
@@ -68,10 +59,15 @@ def scraper_fiche(numero_licence):
         for i, rep in enumerate(repondants[:3], 1):
             data[f"Répondant {i}"] = rep
 
+        # S'assurer que toutes les colonnes existent
+        for col in ["Réclamations cautionnement", "Répondant 1", "Répondant 2", "Répondant 3"]:
+            if col not in data:
+                data[col] = ""
+
         return data
 
     except Exception:
-        return {"URL Fiche RBQ": url}
+        return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
 
 # ── Téléchargement ──────────────────────────────────────────
 print("📥 Téléchargement des données RBQ...")
@@ -111,12 +107,10 @@ print("🔍 Détection des nouveaux entrepreneurs...")
 donnees_existantes = ws.get_all_values()
 
 if len(donnees_existantes) > 1:
-    entetes = donnees_existantes[0]
     licences_existantes = set(
         row[0] for row in donnees_existantes[1:] if row
     )
 else:
-    entetes = []
     licences_existantes = set()
 
 print(f"  → {len(licences_existantes):,} entrepreneurs déjà dans Google Sheets")
@@ -149,14 +143,15 @@ else:
 
     # ── Ajouter dans Google Sheets ────────────────────────────
     print("📤 Ajout des nouveaux dans Google Sheets...")
-    
-    if not entetes:
-        # Première fois — écrire les entêtes
+
+    if not licences_existantes:
+        # Première fois — écrire les entêtes et les données
         data = [df_nouveaux.columns.tolist()] + df_nouveaux.fillna("").values.tolist()
         ws.clear()
         batch = 5000
         for i in range(0, len(data), batch):
             ws.append_rows(data[i:i+batch], value_input_option="RAW")
+            print(f"  → {min(i+batch, len(data)):,} / {len(data):,} lignes écrites")
             time.sleep(2)
     else:
         # Ajouter seulement les nouvelles lignes
@@ -164,6 +159,7 @@ else:
         batch = 5000
         for i in range(0, len(nouvelles_lignes), batch):
             ws.append_rows(nouvelles_lignes[i:i+batch], value_input_option="RAW")
+            print(f"  → {min(i+batch, len(nouvelles_lignes)):,} / {len(nouvelles_lignes):,} lignes écrites")
             time.sleep(2)
 
     print(f"🎉 Terminé! {len(nouveaux):,} nouveaux entrepreneurs ajoutés!")

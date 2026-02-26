@@ -71,10 +71,10 @@ def envoyer_supabase(rows, tentative=1):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
-    url = f"{SUPABASE_URL}/rest/v1/licences_rbq"
+    url = f"{SUPABASE_URL}/rest/v1/licences_rbq?on_conflict=numero_licence"
     
     try:
-        resp = requests.put(url, headers=headers, json=rows, timeout=30)
+        resp = requests.post(url, headers=headers, json=rows, timeout=30)
         if resp.status_code not in [200, 201, 204]:
             print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
             if tentative < 3:

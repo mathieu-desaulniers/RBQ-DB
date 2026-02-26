@@ -98,14 +98,19 @@ with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
         df = pd.read_csv(f, encoding="utf-8-sig", low_memory=False)
 
 print(f"✅ {len(df):,} licences téléchargées")
-print(f"  → {len(df.columns)} colonnes détectées: {list(df.columns)}")
 
 # ── Filtrage ─────────────────────────────────────────────────
 print("🔍 Filtrage des sous-catégories...")
 pattern = "|".join([c.replace(".", "\\.") for c in CODES_FILTRES])
 masque = df["Sous-catégories"].astype(str).str.contains(pattern, na=False, regex=True)
-df_filtre = df[masque].copy().reset_index(drop=True)
-print(f"✅ {len(df_filtre):,} entrepreneurs trouvés")
+df_filtre = df[masque].copy()
+
+# ── Dédupliquer par numéro de licence ────────────────────────
+avant = len(df_filtre)
+df_filtre = df_filtre.drop_duplicates(subset=["Numéro de licence"], keep="first")
+apres = len(df_filtre)
+df_filtre = df_filtre.reset_index(drop=True)
+print(f"✅ {apres:,} entrepreneurs uniques ({avant - apres:,} doublons retirés)")
 
 # ── Renommer les colonnes pour Supabase ──────────────────────
 noms_colonnes = [
@@ -119,8 +124,7 @@ noms_colonnes = [
 ]
 
 if len(df_filtre.columns) != len(noms_colonnes):
-    print(f"⚠️ Nombre de colonnes inattendu: {len(df_filtre.columns)} au lieu de {len(noms_colonnes)}")
-    print(f"  → Colonnes originales: {list(df_filtre.columns)}")
+    print(f"⚠️ Nombre de colonnes inattendu: {len(df_filtre.columns)}")
 else:
     df_filtre.columns = noms_colonnes
     print(f"✅ Colonnes renommées avec succès")

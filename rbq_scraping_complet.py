@@ -23,8 +23,6 @@ CODES_FILTRES = [
     "15.9", "15.10", "16"
 ]
 
-COLONNES_ATTENDUES = 24
-
 def scraper_fiche(numero_licence):
     numero_clean = numero_licence.replace("-", "")
     url = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
@@ -71,15 +69,14 @@ def envoyer_supabase(rows, tentative=1):
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal,resolution=merge-duplicates"
+        "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     url = f"{SUPABASE_URL}/rest/v1/licences_rbq"
     
     try:
-        resp = requests.post(url, headers=headers, json=rows, timeout=30)
+        resp = requests.put(url, headers=headers, json=rows, timeout=30)
         if resp.status_code not in [200, 201, 204]:
             print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
-            # Réessayer une fois si erreur
             if tentative < 3:
                 print(f"  🔄 Nouvelle tentative {tentative+1}/3...")
                 time.sleep(5)

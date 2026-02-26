@@ -2,8 +2,6 @@ import io
 import zipfile
 import urllib.request
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
 import json
 import os
 import time
@@ -16,8 +14,9 @@ URL_RBQ = (
     "32f6ec46-85fd-45e9-945b-965d9235840a/download/"
     "rdl01_extractiondonneesouvertes.zip"
 )
-SHEET_ID = "1S705pc9MDjlDjhnvP4OhBu-J48DQg9P9jJk2TujtmDo"
-ONGLET   = "Licences RBQ"
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 CODES_FILTRES = [
     "15.1", "15.1.1", "15.2", "15.2.1",
@@ -32,21 +31,19 @@ def scraper_fiche(numero_licence):
     try:
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
+            return {"url_fiche_rbq": url, "reclamations_cautionnement": "", "repondant_1": "", "repondant_2": "", "repondant_3": ""}
         
         soup = BeautifulSoup(resp.text, "html.parser")
-        data = {"URL Fiche RBQ": url}
+        data = {"url_fiche_rbq": url}
 
-        # Chercher seulement les réclamations
         dts = soup.find_all("dt")
         dds = soup.find_all("dd")
         for dt, dd in zip(dts, dds):
             label = dt.get_text(strip=True)
             valeur = dd.get_text(" ", strip=True)
             if "Réclamation" in label:
-                data["Réclamations cautionnement"] = valeur
+                data["reclamations_cautionnement"] = valeur
 
-        # Chercher les répondants
         repondants = []
         tags = soup.find_all(["h3", "h4", "p", "div"])
         for tag in tags:
@@ -57,17 +54,29 @@ def scraper_fiche(numero_licence):
                     repondants.append(nom)
 
         for i, rep in enumerate(repondants[:3], 1):
-            data[f"Répondant {i}"] = rep
+            data[f"repondant_{i}"] = rep
 
-        # S'assurer que toutes les colonnes existent
-        for col in ["Réclamations cautionnement", "Répondant 1", "Répondant 2", "Répondant 3"]:
+        for col in ["reclamations_cautionnement", "repondant_1", "repondant_2", "repondant_3"]:
             if col not in data:
                 data[col] = ""
 
         return data
 
     except Exception:
-        return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
+        return {"url_fiche_rbq": url, "reclamations_cautionnement": "", "repondant_1": "", "repondant_2": "", "repondant_3": ""}
+
+def envoyer_supabase(rows):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates"
+    }
+    url = f"{SUPABASE_URL}/rest/v1/licences_rbq"
+    resp = requests.post(url, headers=headers, json=rows)
+    if resp.status_code not in [200, 201]:
+        print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
+    return resp.status_code
 
 # ── Téléchargement ──────────────────────────────────────────
 print("📥 Téléchargement des données RBQ...")
@@ -87,58 +96,41 @@ masque = df["Sous-catégories"].astype(str).str.contains(pattern, na=False, rege
 df_filtre = df[masque].copy().reset_index(drop=True)
 print(f"✅ {len(df_filtre):,} entrepreneurs trouvés")
 
-# ── Scraping ─────────────────────────────────────────────────
-print("🌐 Scraping des fiches RBQ...")
-extras = []
+# ── Renommer les colonnes pour Supabase ──────────────────────
+df_filtre.columns = [
+    "numero_licence", "statut_licence", "type_licence", "date_delivrance",
+    "restriction", "date_debut_restriction", "date_fin_restriction",
+    "association_cautionnement", "montant_caution", "date_paiement_annuel",
+    "mandataire", "courriel", "adresse", "neq", "nom_intervenant",
+    "numero_telephone", "municipalite", "statut_juridique", "code_region",
+    "region_administrative", "nombre_sous_categories", "categorie",
+    "sous_categories", "autre_nom"
+]
+
+# ── Scraping + envoi vers Supabase ───────────────────────────
+print("🌐 Scraping et envoi vers Supabase...")
+batch_rows = []
 total = len(df_filtre)
 
 for idx, row in df_filtre.iterrows():
-    numero = str(row["Numéro de licence"])
+    numero = str(row["numero_licence"])
     info = scraper_fiche(numero)
-    extras.append(info)
     
-    if (idx + 1) % 500 == 0:
-        print(f"  → {idx+1:,} / {total:,} fiches scrapées")
+    ligne = row.to_dict()
+    ligne.update(info)
+    # Nettoyer les valeurs NaN
+    ligne = {k: ("" if pd.isna(v) else str(v)) for k, v in ligne.items()}
+    batch_rows.append(ligne)
     
-    time.sleep(0.5)
+    # Envoyer par batch de 500
+    if len(batch_rows) == 500:
+        envoyer_supabase(batch_rows)
+        print(f"  → {idx+1:,} / {total:,} fiches traitées")
+        batch_rows = []
+        time.sleep(1)
 
-df_extra = pd.DataFrame(extras)
-df_final = pd.concat([df_filtre, df_extra], axis=1)
-print(f"✅ Scraping terminé ! Total colonnes: {len(df_final.columns)}")
+# Envoyer le reste
+if batch_rows:
+    envoyer_supabase(batch_rows)
 
-# Vérification limite Google Sheets (max 10 millions de cellules)
-max_cellules = 10000000
-nb_cellules = len(df_final) * len(df_final.columns)
-print(f"  → {nb_cellules:,} cellules au total ({len(df_final.columns)} colonnes x {len(df_final):,} lignes)")
-if nb_cellules > max_cellules:
-    print(f"⚠️ ATTENTION: dépasse la limite Google Sheets!")
-else:
-    print(f"✅ Dans les limites Google Sheets")
-
-# ── Google Sheets ─────────────────────────────────────────────
-print("🔗 Connexion à Google Sheets...")
-creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = Credentials.from_service_account_info(
-    creds_json,
-    scopes=["https://www.googleapis.com/auth/spreadsheets"]
-)
-client = gspread.authorize(creds)
-sheet  = client.open_by_key(SHEET_ID)
-
-try:
-    ws = sheet.worksheet(ONGLET)
-except:
-    ws = sheet.add_worksheet(ONGLET, rows=1, cols=1)
-
-ws.clear()
-
-print("📤 Envoi vers Google Sheets...")
-data = [df_final.columns.tolist()] + df_final.fillna("").values.tolist()
-
-batch = 5000
-for i in range(0, len(data), batch):
-    ws.append_rows(data[i:i+batch], value_input_option="RAW")
-    print(f"  → {min(i+batch, len(data)):,} / {len(data):,} lignes écrites")
-    time.sleep(2)
-
-print(f"🎉 Terminé! {len(df_final):,} entrepreneurs dans Google Sheets")
+print(f"🎉 Terminé! {total:,} entrepreneurs dans Supabase!")

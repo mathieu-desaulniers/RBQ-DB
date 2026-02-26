@@ -2,7 +2,6 @@ import io
 import zipfile
 import urllib.request
 import pandas as pd
-import json
 import os
 import time
 import requests
@@ -23,6 +22,8 @@ CODES_FILTRES = [
     "15.3", "15.3.1", "15.7", "15.8",
     "15.9", "15.10", "16"
 ]
+
+COLONNES_ATTENDUES = 24
 
 def scraper_fiche(numero_licence):
     numero_clean = numero_licence.replace("-", "")
@@ -65,18 +66,30 @@ def scraper_fiche(numero_licence):
     except Exception:
         return {"url_fiche_rbq": url, "reclamations_cautionnement": "", "repondant_1": "", "repondant_2": "", "repondant_3": ""}
 
-def envoyer_supabase(rows):
+def envoyer_supabase(rows, tentative=1):
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "Prefer": "return=minimal,resolution=merge-duplicates"
     }
     url = f"{SUPABASE_URL}/rest/v1/licences_rbq"
-    resp = requests.post(url, headers=headers, json=rows)
-    if resp.status_code not in [200, 201]:
-        print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
-    return resp.status_code
+    
+    try:
+        resp = requests.post(url, headers=headers, json=rows, timeout=30)
+        if resp.status_code not in [200, 201, 204]:
+            print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
+            # Réessayer une fois si erreur
+            if tentative < 3:
+                print(f"  🔄 Nouvelle tentative {tentative+1}/3...")
+                time.sleep(5)
+                return envoyer_supabase(rows, tentative + 1)
+        return resp.status_code
+    except Exception as e:
+        print(f"  ❌ Exception: {e}")
+        if tentative < 3:
+            time.sleep(5)
+            return envoyer_supabase(rows, tentative + 1)
 
 # ── Téléchargement ──────────────────────────────────────────
 print("📥 Téléchargement des données RBQ...")
@@ -88,6 +101,7 @@ with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
         df = pd.read_csv(f, encoding="utf-8-sig", low_memory=False)
 
 print(f"✅ {len(df):,} licences téléchargées")
+print(f"  → {len(df.columns)} colonnes détectées: {list(df.columns)}")
 
 # ── Filtrage ─────────────────────────────────────────────────
 print("🔍 Filtrage des sous-catégories...")
@@ -97,7 +111,7 @@ df_filtre = df[masque].copy().reset_index(drop=True)
 print(f"✅ {len(df_filtre):,} entrepreneurs trouvés")
 
 # ── Renommer les colonnes pour Supabase ──────────────────────
-df_filtre.columns = [
+noms_colonnes = [
     "numero_licence", "statut_licence", "type_licence", "date_delivrance",
     "restriction", "date_debut_restriction", "date_fin_restriction",
     "association_cautionnement", "montant_caution", "date_paiement_annuel",
@@ -106,6 +120,13 @@ df_filtre.columns = [
     "region_administrative", "nombre_sous_categories", "categorie",
     "sous_categories", "autre_nom"
 ]
+
+if len(df_filtre.columns) != len(noms_colonnes):
+    print(f"⚠️ Nombre de colonnes inattendu: {len(df_filtre.columns)} au lieu de {len(noms_colonnes)}")
+    print(f"  → Colonnes originales: {list(df_filtre.columns)}")
+else:
+    df_filtre.columns = noms_colonnes
+    print(f"✅ Colonnes renommées avec succès")
 
 # ── Scraping + envoi vers Supabase ───────────────────────────
 print("🌐 Scraping et envoi vers Supabase...")
@@ -118,19 +139,18 @@ for idx, row in df_filtre.iterrows():
     
     ligne = row.to_dict()
     ligne.update(info)
-    # Nettoyer les valeurs NaN
     ligne = {k: ("" if pd.isna(v) else str(v)) for k, v in ligne.items()}
     batch_rows.append(ligne)
     
-    # Envoyer par batch de 500
     if len(batch_rows) == 500:
         envoyer_supabase(batch_rows)
         print(f"  → {idx+1:,} / {total:,} fiches traitées")
         batch_rows = []
-        time.sleep(1)
+        time.sleep(0.5)
 
 # Envoyer le reste
 if batch_rows:
     envoyer_supabase(batch_rows)
+    print(f"  → {total:,} / {total:,} fiches traitées")
 
 print(f"🎉 Terminé! {total:,} entrepreneurs dans Supabase!")

@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Installer les librairies
-        run: pip install pandas gspread google-auth openpyxl
+        run: pip install pandas gspread google-auth openpyxl requests beautifulsoup4
 
       - name: Lancer la mise à jour
         env:

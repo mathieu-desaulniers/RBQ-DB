@@ -19,10 +19,11 @@ jobs:
 
       - name: Installer les librairies
         run: |
-          pip install pandas gspread google-auth requests beautifulsoup4 openpyxl
+          pip install pandas requests beautifulsoup4 openpyxl
 
       - name: Lancer le scraping complet
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python rbq_scraping_complet.py

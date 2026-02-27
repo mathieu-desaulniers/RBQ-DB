@@ -5,7 +5,6 @@ import pandas as pd
 import os
 import time
 import requests
-from bs4 import BeautifulSoup
 
 URL_RBQ = (
     "https://www.donneesquebec.ca/recherche/dataset/"
@@ -23,46 +22,55 @@ CODES_FILTRES = [
     "15.9", "15.10", "16"
 ]
 
-def scraper_fiche(numero_licence):
+def appeler_api_rbq(numero_licence):
     numero_clean = numero_licence.replace("-", "")
-    url = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
-    
+    url = f"https://www.pes.rbq.gouv.qc.ca/PIPROXY/RBQ.Registre.API/Licence/Entrepreneur/{numero_clean}"
+    url_fiche = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
+
+    vide = {
+        "url_fiche_rbq": url_fiche,
+        "reclamations_cautionnement": "",
+        "repondant_1": "",
+        "repondant_2": "",
+        "repondant_3": ""
+    }
+
     try:
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return {"url_fiche_rbq": url, "reclamations_cautionnement": "", "repondant_1": "", "repondant_2": "", "repondant_3": ""}
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        data = {"url_fiche_rbq": url}
+            return vide
 
-        dts = soup.find_all("dt")
-        dds = soup.find_all("dd")
-        for dt, dd in zip(dts, dds):
-            label = dt.get_text(strip=True)
-            valeur = dd.get_text(" ", strip=True)
-            if "Réclamation" in label:
-                data["reclamations_cautionnement"] = valeur
+        data = resp.json()
+        retour = data.get("retour", {})
 
+        if not retour:
+            return vide
+
+        # Réclamations
+        reclamations = retour.get("listeReclamations", [])
+        reclamations_txt = str(len(reclamations)) if reclamations else "0"
+
+        # Répondants depuis dirigeants
+        dirigeants = retour.get("dirigeants", [])
         repondants = []
-        tags = soup.find_all(["h3", "h4", "p", "div"])
-        for tag in tags:
-            texte = tag.get_text(strip=True)
-            if "Répondant" in texte and len(texte) < 100:
-                nom = texte.replace("Répondant", "").strip()
-                if nom and nom not in repondants:
-                    repondants.append(nom)
+        for d in dirigeants:
+            nom = d.get("nom", "").strip()
+            prenom = d.get("prenom", "").strip()
+            nom_complet = f"{prenom} {nom}".strip()
+            if nom_complet and nom_complet not in repondants:
+                repondants.append(nom_complet)
 
-        for i, rep in enumerate(repondants[:3], 1):
-            data[f"repondant_{i}"] = rep
+        return {
+            "url_fiche_rbq": url_fiche,
+            "reclamations_cautionnement": reclamations_txt,
+            "repondant_1": repondants[0] if len(repondants) > 0 else "",
+            "repondant_2": repondants[1] if len(repondants) > 1 else "",
+            "repondant_3": repondants[2] if len(repondants) > 2 else "",
+        }
 
-        for col in ["reclamations_cautionnement", "repondant_1", "repondant_2", "repondant_3"]:
-            if col not in data:
-                data[col] = ""
-
-        return data
-
-    except Exception:
-        return {"url_fiche_rbq": url, "reclamations_cautionnement": "", "repondant_1": "", "repondant_2": "", "repondant_3": ""}
+    except Exception as e:
+        print(f"  ❌ Erreur API pour {numero_licence}: {e}")
+        return vide
 
 def envoyer_supabase(rows, tentative=1):
     headers = {
@@ -72,7 +80,7 @@ def envoyer_supabase(rows, tentative=1):
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     url = f"{SUPABASE_URL}/rest/v1/licences_rbq?on_conflict=numero_licence"
-    
+
     try:
         resp = requests.post(url, headers=headers, json=rows, timeout=30)
         if resp.status_code not in [200, 201, 204]:
@@ -129,20 +137,20 @@ else:
     df_filtre.columns = noms_colonnes
     print(f"✅ Colonnes renommées avec succès")
 
-# ── Scraping + envoi vers Supabase ───────────────────────────
-print("🌐 Scraping et envoi vers Supabase...")
+# ── Appel API + envoi vers Supabase ─────────────────────────
+print("🌐 Appel API RBQ et envoi vers Supabase...")
 batch_rows = []
 total = len(df_filtre)
 
 for idx, row in df_filtre.iterrows():
     numero = str(row["numero_licence"])
-    info = scraper_fiche(numero)
-    
+    info = appeler_api_rbq(numero)
+
     ligne = row.to_dict()
     ligne.update(info)
     ligne = {k: ("" if pd.isna(v) else str(v)) for k, v in ligne.items()}
     batch_rows.append(ligne)
-    
+
     if len(batch_rows) == 500:
         envoyer_supabase(batch_rows)
         print(f"  → {idx+1:,} / {total:,} fiches traitées")

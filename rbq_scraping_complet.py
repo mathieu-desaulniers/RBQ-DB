@@ -50,15 +50,17 @@ def appeler_api_rbq(numero_licence):
         reclamations = retour.get("listeReclamations", [])
         reclamations_txt = str(len(reclamations)) if reclamations else "0"
 
-        # Répondants depuis dirigeants
+        # Répondants depuis dirigeants → interlocuteurDirigeant
         dirigeants = retour.get("dirigeants", [])
         repondants = []
         for d in dirigeants:
-            nom = d.get("nom", "").strip()
-            prenom = d.get("prenom", "").strip()
-            nom_complet = f"{prenom} {nom}".strip()
-            if nom_complet and nom_complet not in repondants:
-                repondants.append(nom_complet)
+            interlocuteur = d.get("interlocuteurDirigeant", {})
+            if interlocuteur:
+                nom = interlocuteur.get("nom", "").strip()
+                prenom = interlocuteur.get("prenom", "").strip()
+                nom_complet = f"{prenom} {nom}".strip()
+                if nom_complet and nom_complet not in repondants:
+                    repondants.append(nom_complet)
 
         return {
             "url_fiche_rbq": url_fiche,

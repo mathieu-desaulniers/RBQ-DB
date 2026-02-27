@@ -27,6 +27,11 @@ def appeler_api_rbq(numero_licence):
     url = f"https://www.pes.rbq.gouv.qc.ca/PIPROXY/RBQ.Registre.API/Licence/Entrepreneur/{numero_clean}"
     url_fiche = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
 
+    headers = {
+        "Referer": f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+    }
+
     vide = {
         "url_fiche_rbq": url_fiche,
         "reclamations_cautionnement": "",
@@ -36,7 +41,7 @@ def appeler_api_rbq(numero_licence):
     }
 
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
             return vide
 
@@ -50,17 +55,15 @@ def appeler_api_rbq(numero_licence):
         reclamations = retour.get("listeReclamations", [])
         reclamations_txt = str(len(reclamations)) if reclamations else "0"
 
-        # Répondants depuis dirigeants → interlocuteurDirigeant
-        dirigeants = retour.get("dirigeants", [])
+        # Répondants depuis listeInterlocuteurs
+        interlocuteurs = retour.get("listeInterlocuteurs", [])
         repondants = []
-        for d in dirigeants:
-            interlocuteur = d.get("interlocuteurDirigeant", {})
-            if interlocuteur:
-                nom = interlocuteur.get("nom", "").strip()
-                prenom = interlocuteur.get("prenom", "").strip()
-                nom_complet = f"{prenom} {nom}".strip()
-                if nom_complet and nom_complet not in repondants:
-                    repondants.append(nom_complet)
+        for i in interlocuteurs:
+            nom = i.get("nom", "").strip()
+            prenom = i.get("prenom", "").strip()
+            nom_complet = f"{prenom} {nom}".strip()
+            if nom_complet and nom_complet not in repondants:
+                repondants.append(nom_complet)
 
         return {
             "url_fiche_rbq": url_fiche,

@@ -2,13 +2,9 @@ import io
 import zipfile
 import urllib.request
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
-import json
 import os
 import time
 import requests
-from bs4 import BeautifulSoup
 
 URL_RBQ = (
     "https://www.donneesquebec.ca/recherche/dataset/"
@@ -16,8 +12,9 @@ URL_RBQ = (
     "32f6ec46-85fd-45e9-945b-965d9235840a/download/"
     "rdl01_extractiondonneesouvertes.zip"
 )
-SHEET_ID = "1S705pc9MDjlDjhnvP4OhBu-J48DQg9P9jJk2TujtmDo"
-ONGLET   = "Licences RBQ"
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 CODES_FILTRES = [
     "15.1", "15.1.1", "15.2", "15.2.1",
@@ -25,49 +22,108 @@ CODES_FILTRES = [
     "15.9", "15.10", "16"
 ]
 
-def scraper_fiche(numero_licence):
+def appeler_api_rbq(numero_licence):
     numero_clean = numero_licence.replace("-", "")
-    url = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
-    
+    url = f"https://www.pes.rbq.gouv.qc.ca/PIPROXY/RBQ.Registre.API/Licence/Entrepreneur/{numero_clean}"
+    url_fiche = f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux"
+
+    headers = {
+        "Referer": f"https://www.pes.rbq.gouv.qc.ca/RegistreLicences/FicheDetenteur/{numero_clean}?mode=RegionTypeTravaux",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+    }
+
+    vide = {
+        "url_fiche_rbq": url_fiche,
+        "reclamations_cautionnement": "",
+        "repondant_1": "",
+        "repondant_2": "",
+        "repondant_3": ""
+    }
+
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
-            return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        data = {"URL Fiche RBQ": url}
+            return vide
 
-        # Chercher seulement les réclamations
-        dts = soup.find_all("dt")
-        dds = soup.find_all("dd")
-        for dt, dd in zip(dts, dds):
-            label = dt.get_text(strip=True)
-            valeur = dd.get_text(" ", strip=True)
-            if "Réclamation" in label:
-                data["Réclamations cautionnement"] = valeur
+        data = resp.json()
+        retour = data.get("retour", {})
 
-        # Chercher les répondants
+        if not retour:
+            return vide
+
+        # Réclamations
+        reclamations = retour.get("listeReclamations", [])
+        reclamations_txt = str(len(reclamations)) if reclamations else "0"
+
+        # Répondants depuis listeInterlocuteurs
+        interlocuteurs = retour.get("listeInterlocuteurs", [])
         repondants = []
-        tags = soup.find_all(["h3", "h4", "p", "div"])
-        for tag in tags:
-            texte = tag.get_text(strip=True)
-            if "Répondant" in texte and len(texte) < 100:
-                nom = texte.replace("Répondant", "").strip()
-                if nom and nom not in repondants:
-                    repondants.append(nom)
+        for i in interlocuteurs:
+            nom = i.get("nom", "").strip()
+            prenom = i.get("prenom", "").strip()
+            nom_complet = f"{prenom} {nom}".strip()
+            if nom_complet and nom_complet not in repondants:
+                repondants.append(nom_complet)
 
-        for i, rep in enumerate(repondants[:3], 1):
-            data[f"Répondant {i}"] = rep
+        return {
+            "url_fiche_rbq": url_fiche,
+            "reclamations_cautionnement": reclamations_txt,
+            "repondant_1": repondants[0] if len(repondants) > 0 else "",
+            "repondant_2": repondants[1] if len(repondants) > 1 else "",
+            "repondant_3": repondants[2] if len(repondants) > 2 else "",
+        }
 
-        # S'assurer que toutes les colonnes existent
-        for col in ["Réclamations cautionnement", "Répondant 1", "Répondant 2", "Répondant 3"]:
-            if col not in data:
-                data[col] = ""
+    except Exception as e:
+        print(f"  ❌ Erreur API pour {numero_licence}: {e}")
+        return vide
 
-        return data
+def get_licences_existantes():
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+    url = f"{SUPABASE_URL}/rest/v1/licences_rbq?select=numero_licence"
+    
+    licences = set()
+    offset = 0
+    limit = 1000
+    
+    while True:
+        resp = requests.get(f"{url}&limit={limit}&offset={offset}", headers=headers)
+        data = resp.json()
+        if not data:
+            break
+        for row in data:
+            licences.add(row["numero_licence"])
+        if len(data) < limit:
+            break
+        offset += limit
+    
+    return licences
 
-    except Exception:
-        return {"URL Fiche RBQ": url, "Réclamations cautionnement": "", "Répondant 1": "", "Répondant 2": "", "Répondant 3": ""}
+def envoyer_supabase(rows, tentative=1):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal"
+    }
+    url = f"{SUPABASE_URL}/rest/v1/licences_rbq?on_conflict=numero_licence"
+
+    try:
+        resp = requests.post(url, headers=headers, json=rows, timeout=30)
+        if resp.status_code not in [200, 201, 204]:
+            print(f"  ⚠️ Erreur Supabase: {resp.status_code} - {resp.text[:200]}")
+            if tentative < 3:
+                print(f"  🔄 Nouvelle tentative {tentative+1}/3...")
+                time.sleep(5)
+                return envoyer_supabase(rows, tentative + 1)
+        return resp.status_code
+    except Exception as e:
+        print(f"  ❌ Exception: {e}")
+        if tentative < 3:
+            time.sleep(5)
+            return envoyer_supabase(rows, tentative + 1)
 
 # ── Téléchargement ──────────────────────────────────────────
 print("📥 Téléchargement des données RBQ...")
@@ -84,40 +140,37 @@ print(f"✅ {len(df):,} licences téléchargées")
 print("🔍 Filtrage des sous-catégories...")
 pattern = "|".join([c.replace(".", "\\.") for c in CODES_FILTRES])
 masque = df["Sous-catégories"].astype(str).str.contains(pattern, na=False, regex=True)
-df_filtre = df[masque].copy().reset_index(drop=True)
-print(f"✅ {len(df_filtre):,} entrepreneurs trouvés")
+df_filtre = df[masque].copy()
 
-# ── Connexion Google Sheets ───────────────────────────────────
-print("🔗 Connexion à Google Sheets...")
-creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = Credentials.from_service_account_info(
-    creds_json,
-    scopes=["https://www.googleapis.com/auth/spreadsheets"]
-)
-client = gspread.authorize(creds)
-sheet  = client.open_by_key(SHEET_ID)
+# ── Dédupliquer ───────────────────────────────────────────────
+avant = len(df_filtre)
+df_filtre = df_filtre.drop_duplicates(subset=["Numéro de licence"], keep="first")
+df_filtre = df_filtre.reset_index(drop=True)
+print(f"✅ {len(df_filtre):,} entrepreneurs uniques ({avant - len(df_filtre):,} doublons retirés)")
 
-try:
-    ws = sheet.worksheet(ONGLET)
-except:
-    ws = sheet.add_worksheet(ONGLET, rows=1, cols=1)
+# ── Renommer les colonnes ─────────────────────────────────────
+noms_colonnes = [
+    "numero_licence", "statut_licence", "type_licence", "date_delivrance",
+    "restriction", "date_debut_restriction", "date_fin_restriction",
+    "association_cautionnement", "montant_caution", "date_paiement_annuel",
+    "mandataire", "courriel", "adresse", "neq", "nom_intervenant",
+    "numero_telephone", "municipalite", "statut_juridique", "code_region",
+    "region_administrative", "nombre_sous_categories", "categorie",
+    "sous_categories", "autre_nom"
+]
+
+if len(df_filtre.columns) != len(noms_colonnes):
+    print(f"⚠️ Nombre de colonnes inattendu: {len(df_filtre.columns)}")
+else:
+    df_filtre.columns = noms_colonnes
 
 # ── Détecter les nouveaux ─────────────────────────────────────
-print("🔍 Détection des nouveaux entrepreneurs...")
-donnees_existantes = ws.get_all_values()
+print("🔍 Récupération des licences existantes dans Supabase...")
+licences_existantes = get_licences_existantes()
+print(f"  → {len(licences_existantes):,} licences déjà dans Supabase")
 
-if len(donnees_existantes) > 1:
-    licences_existantes = set(
-        row[0] for row in donnees_existantes[1:] if row
-    )
-else:
-    licences_existantes = set()
-
-print(f"  → {len(licences_existantes):,} entrepreneurs déjà dans Google Sheets")
-
-# Trouver les nouveaux
 nouveaux = df_filtre[
-    ~df_filtre["Numéro de licence"].astype(str).isin(licences_existantes)
+    ~df_filtre["numero_licence"].astype(str).isin(licences_existantes)
 ].copy().reset_index(drop=True)
 
 print(f"  → {len(nouveaux):,} nouveaux entrepreneurs trouvés")
@@ -125,41 +178,27 @@ print(f"  → {len(nouveaux):,} nouveaux entrepreneurs trouvés")
 if len(nouveaux) == 0:
     print("✅ Aucun nouveau entrepreneur, rien à faire !")
 else:
-    # ── Scraper seulement les nouveaux ───────────────────────
-    print(f"🌐 Scraping de {len(nouveaux):,} nouveaux entrepreneurs...")
-    extras = []
+    print(f"🌐 Appel API RBQ pour {len(nouveaux):,} nouveaux entrepreneurs...")
+    batch_rows = []
+    total = len(nouveaux)
+
     for idx, row in nouveaux.iterrows():
-        numero = str(row["Numéro de licence"])
-        info = scraper_fiche(numero)
-        extras.append(info)
-        
-        if (idx + 1) % 50 == 0:
-            print(f"  → {idx+1:,} / {len(nouveaux):,} fiches scrapées")
-        
-        time.sleep(0.5)
+        numero = str(row["numero_licence"])
+        info = appeler_api_rbq(numero)
 
-    df_extra = pd.DataFrame(extras)
-    df_nouveaux = pd.concat([nouveaux, df_extra], axis=1)
+        ligne = row.to_dict()
+        ligne.update(info)
+        ligne = {k: ("" if pd.isna(v) else str(v)) for k, v in ligne.items()}
+        batch_rows.append(ligne)
 
-    # ── Ajouter dans Google Sheets ────────────────────────────
-    print("📤 Ajout des nouveaux dans Google Sheets...")
+        if len(batch_rows) == 500:
+            envoyer_supabase(batch_rows)
+            print(f"  → {idx+1:,} / {total:,} fiches traitées")
+            batch_rows = []
+            time.sleep(0.5)
 
-    if not licences_existantes:
-        # Première fois — écrire les entêtes et les données
-        data = [df_nouveaux.columns.tolist()] + df_nouveaux.fillna("").values.tolist()
-        ws.clear()
-        batch = 5000
-        for i in range(0, len(data), batch):
-            ws.append_rows(data[i:i+batch], value_input_option="RAW")
-            print(f"  → {min(i+batch, len(data)):,} / {len(data):,} lignes écrites")
-            time.sleep(2)
-    else:
-        # Ajouter seulement les nouvelles lignes
-        nouvelles_lignes = df_nouveaux.fillna("").values.tolist()
-        batch = 5000
-        for i in range(0, len(nouvelles_lignes), batch):
-            ws.append_rows(nouvelles_lignes[i:i+batch], value_input_option="RAW")
-            print(f"  → {min(i+batch, len(nouvelles_lignes)):,} / {len(nouvelles_lignes):,} lignes écrites")
-            time.sleep(2)
+    if batch_rows:
+        envoyer_supabase(batch_rows)
+        print(f"  → {total:,} / {total:,} fiches traitées")
 
-    print(f"🎉 Terminé! {len(nouveaux):,} nouveaux entrepreneurs ajoutés!")
+    print(f"🎉 Terminé! {total:,} nouveaux entrepreneurs ajoutés dans Supabase!")

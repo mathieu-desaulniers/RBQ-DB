@@ -1,27 +1,22 @@
 name: Mise à jour RBQ quotidienne
-
 on:
   schedule:
     - cron: '0 12 * * *'  # 7h heure de Montréal (12h UTC)
   workflow_dispatch:        # Permet de lancer manuellement aussi
-
 jobs:
   update:
     runs-on: ubuntu-latest
-
     steps:
       - name: Télécharger le code
         uses: actions/checkout@v3
-
       - name: Installer Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
       - name: Installer les librairies
-        run: pip install pandas gspread google-auth openpyxl requests beautifulsoup4
-
+        run: pip install pandas requests openpyxl
       - name: Lancer la mise à jour
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python rbq_update.py
